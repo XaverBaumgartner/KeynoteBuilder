@@ -1,6 +1,7 @@
-KeynoteBuilder.app/
-config.txt
 *.key
+outputs/
+decks/
+blocks/
 
 # macOS metadata
 .DS_Store
