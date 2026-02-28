@@ -1,30 +1,21 @@
 tell application "Finder"
 	set root to container of (path to me) as alias
-	set blocksFolder to folder "blocks" of root as alias
 	set scriptPath to POSIX path of (path to me) & "Contents/Resources/fuzzy_match.pl"
-	
-	try
-		set decksFolder to folder "decks" of root as alias
-	on error
-		tell application "System Events"
-			activate
-			display dialog "No decks/ folder found. Please create a decks/ folder with .txt config files." buttons {"OK"} default button 1
-		end tell
-		return
-	end try
 end tell
 
--- Ensure outputs/ and .manifests/ exist
-set outputsPath to POSIX path of (root as text) & "outputs/"
+set rootHFS to root as text
+set rootPOSIX to POSIX path of rootHFS
+
+set blocksHFS to rootHFS & "blocks:"
+set blocksPath to rootPOSIX & "blocks/"
+set decksPath to rootPOSIX & "decks/"
+set outputsPath to rootPOSIX & "outputs/"
 set manifestsPath to outputsPath & ".manifests/"
-do shell script "mkdir -p " & quoted form of manifestsPath
 
--- List all .txt configs in decks/
-tell application "Finder"
-	set configFiles to every file of decksFolder whose name extension is "txt"
-end tell
+-- Check staleness for all configs in one call
+set checkOutput to do shell script "/usr/bin/perl " & quoted form of scriptPath & " --check-all " & quoted form of manifestsPath & " " & quoted form of outputsPath & " " & quoted form of blocksPath & " " & quoted form of decksPath
 
-if (count of configFiles) is 0 then
+if checkOutput is "" then
 	tell application "System Events"
 		activate
 		display dialog "No deck configs (.txt) found in the decks/ folder." buttons {"OK"} default button 1
@@ -32,42 +23,28 @@ if (count of configFiles) is 0 then
 	return
 end if
 
--- Check staleness for each config
+set parsedOutput to run script checkOutput
+try
+	set errorMessage to errMsg of parsedOutput
+	tell application "System Events"
+		activate
+		display dialog errorMessage buttons {"OK"} default button 1
+	end tell
+	return
+end try
+
+set allDecks to parsedOutput
+
 set staleDecks to {}
 set staleDeckNames to {}
 set freshDeckNames to {}
 
-repeat with configFile in configFiles
-	set configPath to POSIX path of (configFile as alias)
-	set configName to text 1 thru -5 of (name of configFile as text) -- strip .txt
-	
-	set scriptOutput to do shell script "/usr/bin/perl " & quoted form of scriptPath & " --check " & quoted form of manifestsPath & " " & quoted form of (POSIX path of blocksFolder) & " " & quoted form of configPath
-	
-	-- Parse STATUS line
-	set statusLine to paragraph 1 of scriptOutput
-	set deckStatus to text 8 thru -1 of statusLine -- after "STATUS:"
-	
-	-- Parse MATCHES line
-	set matchesLine to paragraph 2 of scriptOutput
-	if length of matchesLine > 8 then
-		set matchesText to text 9 thru -1 of matchesLine
+repeat with deck in allDecks
+	if deckStatus of deck is "STALE" then
+		set end of staleDecks to contents of deck
+		set end of staleDeckNames to deckName of deck
 	else
-		set matchesText to ""
-	end if
-	
-	-- Parse FILES line
-	set filesLine to paragraph 3 of scriptOutput
-	if length of filesLine > 6 then
-		set filesText to text 7 thru -1 of filesLine
-	else
-		set filesText to ""
-	end if
-	
-	if deckStatus is "STALE" then
-		set end of staleDecks to {deckName:configName, deckConfig:configPath, deckFiles:filesText, deckMatches:matchesText}
-		set end of staleDeckNames to configName
-	else
-		set end of freshDeckNames to configName
+		set end of freshDeckNames to deckName of deck
 	end if
 end repeat
 
@@ -83,11 +60,9 @@ end if
 set infoText to ""
 repeat with deck in staleDecks
 	set theMatches to deckMatches of deck
-	if length of theMatches > 0 then
-		set AppleScript's text item delimiters to "|"
-		set matchItems to text items of theMatches
+	if (count of theMatches) > 0 then
 		set AppleScript's text item delimiters to return & "    "
-		set matchesPrompt to matchItems as text
+		set matchesPrompt to theMatches as text
 		set AppleScript's text item delimiters to ""
 		set infoText to infoText & "Corrections in " & (deckName of deck) & ":" & return & "    " & matchesPrompt & return
 	end if
@@ -127,6 +102,7 @@ repeat with deck in staleDecks
 end repeat
 
 set deckCount to count of decksToRebuild
+set builtConfigs to {}
 
 -- Assemble each selected deck
 repeat with i from 1 to deckCount
@@ -135,13 +111,9 @@ repeat with i from 1 to deckCount
 	-- Parse file list OUTSIDE Keynote tell block
 	set theFiles to deckFiles of deck
 	set theName to deckName of deck
-	set theConfig to deckConfig of deck
+	set theConfig to decksPath & theName & ".txt"
 	
-	set AppleScript's text item delimiters to "|"
-	set fileItems to text items of theFiles
-	set AppleScript's text item delimiters to ""
-	
-	if (count of fileItems) > 0 then
+	if (count of theFiles) > 0 then
 		tell application "Keynote Creator Studio"
 			activate
 			
@@ -149,8 +121,8 @@ repeat with i from 1 to deckCount
 			set savePath to outputsPath & theName & ".key"
 			save targetDoc in POSIX file savePath
 			
-			repeat with safeFileName in fileItems
-				set filePath to (blocksFolder as text) & safeFileName & ".key"
+			repeat with safeFileName in theFiles
+				set filePath to blocksHFS & safeFileName & ".key"
 				set sourceDoc to open file filePath
 				move slides of sourceDoc to end of slides of targetDoc
 				close sourceDoc saving no
@@ -159,16 +131,24 @@ repeat with i from 1 to deckCount
 			delete slide 1 of targetDoc
 			save targetDoc
 			
-			-- Close this deck if it's not the last one
-			if i < deckCount then
+			-- Close this deck unless only one is built, then keep it open for inspection
+			if deckCount > 1 then
 				close targetDoc saving yes
 			end if
 		end tell
 		
-		-- Write manifest after successful build
-		do shell script "/usr/bin/perl " & quoted form of scriptPath & " --write-manifest " & quoted form of manifestsPath & " " & quoted form of (POSIX path of blocksFolder) & " " & quoted form of theConfig
+		-- Build config_path argument for --write-manifests
+		set end of builtConfigs to quoted form of theConfig
 	end if
 end repeat
+
+-- Write manifests for built decks (pass config paths, Perl will re-resolve and update them)
+if (count of builtConfigs) > 0 then
+	set AppleScript's text item delimiters to " "
+	set configArgs to builtConfigs as text
+	set AppleScript's text item delimiters to ""
+	do shell script "/usr/bin/perl " & quoted form of scriptPath & " --write-manifests " & quoted form of manifestsPath & " " & quoted form of blocksPath & " " & configArgs
+end if
 
 tell application "System Events"
 	activate

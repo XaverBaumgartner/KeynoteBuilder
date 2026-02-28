@@ -3,6 +3,8 @@ outputs/
 decks/
 blocks/
 
+KeynoteBuilder.app/
+
 # macOS metadata
 .DS_Store
 ._*

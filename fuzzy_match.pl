@@ -62,6 +62,15 @@ sub jaro_winkler {
     return $jaro + $prefix * 0.1 * (1 - $jaro);
 }
 
+# --- AppleScript string escaping ---
+
+sub as_escape {
+    my ($s) = @_;
+    $s =~ s/\\/\\\\/g;
+    $s =~ s/"/\\"/g;
+    return $s;
+}
+
 # --- File hashing ---
 
 sub hash_file {
@@ -76,7 +85,7 @@ sub hash_file {
 # --- Fuzzy matching (shared logic) ---
 
 sub resolve_blocks {
-    my ($blocks_path, $config_path) = @_;
+    my ($blocks_path, $config_path, $write_config) = @_;
 
     my @files = map { my $b = fileparse($_, qr/\.key/i); $b } bsd_glob("$blocks_path/*.key");
     my @files_lower = map { lc } @files;
@@ -112,14 +121,12 @@ sub resolve_blocks {
         if ($base ne $matched_base) {
             push @inexact_matches, "'$base' -> '$matched_base'";
             $config_modified = 1;
-        } elsif ($raw_name =~ s/^\s+|\s+$//gr ne $matched_base) {
-            $config_modified = 1;
         }
 
         push @matched_names, $matched_base;
     }
 
-    if ($config_modified) {
+    if ($write_config && $config_modified) {
         open my $out, '>', $config_path or die "Cannot write $config_path: $!";
         print $out join("\n", @matched_names) . "\n";
         close $out;
@@ -178,9 +185,13 @@ sub compute_hashes {
 }
 
 sub is_stale {
-    my ($manifest_dir, $blocks_path, $config_path, $matched_names_ref) = @_;
+    my ($manifest_dir, $outputs_dir, $blocks_path, $config_path, $matched_names_ref) = @_;
     my $mpath = manifest_path($manifest_dir, $config_path);
     return 1 unless -f $mpath;  # No manifest = stale
+
+    # Check that the output .key file exists
+    my ($config_name) = fileparse($config_path, qr/\.[^.]*/);
+    return 1 unless -e "$outputs_dir/$config_name.key";  # Output deleted = stale
 
     my %old = read_manifest($mpath);
     my %current = compute_hashes($blocks_path, $config_path, $matched_names_ref);
@@ -202,32 +213,49 @@ if (@ARGV >= 1 && $ARGV[0] =~ /^--/) {
     $mode = shift @ARGV;
 }
 
-if ($mode eq '--check') {
-    # Usage: fuzzy_match.pl --check <manifest_dir> <blocks_path> <config_path>
-    my ($manifest_dir, $blocks_path, $config_path) = @ARGV;
-    my ($matched_names, $inexact_matches) = resolve_blocks($blocks_path, $config_path);
+if ($mode eq '--check-all') {
+    # Usage: fuzzy_match.pl --check-all <manifest_dir> <outputs_dir> <blocks_path> <decks_path>
+    my ($manifest_dir, $outputs_dir, $blocks_path, $decks_path) = @ARGV;
 
-    my $stale = is_stale($manifest_dir, $blocks_path, $config_path, $matched_names);
-    print "STATUS:" . ($stale ? "STALE" : "FRESH") . "\n";
-    print "MATCHES:" . join('|', @$inexact_matches) . "\n";
-    print "FILES:" . join('|', @$matched_names) . "\n";
+    if (!-d $blocks_path) {
+        print '{errMsg:"No blocks/ folder found."}';
+        exit 0;
+    }
+    if (!-d $decks_path) {
+        print '{errMsg:"No decks/ folder found. Please create a decks/ folder with .txt config files."}';
+        exit 0;
+    }
 
-} elsif ($mode eq '--write-manifest') {
-    # Usage: fuzzy_match.pl --write-manifest <manifest_dir> <blocks_path> <config_path>
-    my ($manifest_dir, $blocks_path, $config_path) = @ARGV;
-    my ($matched_names, undef) = resolve_blocks($blocks_path, $config_path);
+    make_path($outputs_dir) unless -d $outputs_dir;
+    make_path($manifest_dir) unless -d $manifest_dir;
 
-    my %hashes = compute_hashes($blocks_path, $config_path, $matched_names);
-    my $mpath = manifest_path($manifest_dir, $config_path);
-    write_manifest($mpath, %hashes);
-    print "MANIFEST:$mpath\n";
+    my @configs = bsd_glob("$decks_path/*.txt");
+    my @records;
+    for my $config_path (sort @configs) {
+        my ($config_name) = fileparse($config_path, qr/\.[^.]*/);
+        my ($matched_names, $inexact_matches) = resolve_blocks($blocks_path, $config_path, 0);
+        my $stale = is_stale($manifest_dir, $outputs_dir, $blocks_path, $config_path, $matched_names);
+        my $status = $stale ? 'STALE' : 'FRESH';
 
-} else {
-    # Default mode (backward compatible): fuzzy_match.pl <blocks_path> <config_path>
-    my $blocks_path = $ARGV[0];
-    my $config_path = $ARGV[1];
-    my ($matched_names, $inexact_matches) = resolve_blocks($blocks_path, $config_path);
+        my $name_escaped = as_escape($config_name);
+        my @match_items = map { '"' . as_escape($_) . '"' } @$inexact_matches;
+        my @file_items  = map { '"' . as_escape($_) . '"' } @$matched_names;
 
-    print "MATCHES:" . join('|', @$inexact_matches) . "\n";
-    print "FILES:" . join('|', @$matched_names) . "\n";
+        my $matches_list = '{' . join(', ', @match_items) . '}';
+        my $files_list   = '{' . join(', ', @file_items)  . '}';
+
+        push @records, '{deckName:"' . $name_escaped . '", deckStatus:"' . $status . '", deckMatches:' . $matches_list . ', deckFiles:' . $files_list . '}';
+    }
+    print '{' . join(', ', @records) . '}';
+
+} elsif ($mode eq '--write-manifests') {
+    # Usage: fuzzy_match.pl --write-manifests <manifest_dir> <blocks_path> <config_path1> <config_path2> ...
+    my $manifest_dir = shift @ARGV;
+    my $blocks_path = shift @ARGV;
+    for my $config_path (@ARGV) {
+        my ($matched_names, $inexact_matches) = resolve_blocks($blocks_path, $config_path, 1);
+        my %hashes = compute_hashes($blocks_path, $config_path, $matched_names);
+        my $mpath = manifest_path($manifest_dir, $config_path);
+        write_manifest($mpath, %hashes);
+    }
 }
