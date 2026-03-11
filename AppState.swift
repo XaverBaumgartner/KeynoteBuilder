@@ -2,12 +2,23 @@ import Foundation
 import Combine
 import AppKit
 
+struct DeckData {
+    let url: URL
+    let matchedNames: [String]
+    let inexactMatches: [String]
+}
+
+private struct BuildInfo {
+    let name: String
+    let url: URL
+    let matches: [String]
+}
+
 @MainActor
 class AppState: ObservableObject {
     @Published var staleNames: [String] = []
     @Published var freshNames: [String] = []
     @Published var selectedNames: Set<String> = []
-    @Published var corrections: [String] = []
     @Published var deckDataDict: [String: DeckData] = [:]
     @Published var initializationError: String? = nil
     
@@ -61,7 +72,7 @@ class AppState: ObservableObject {
                 }
                 
                 if !deckInfo.matchedNames.isEmpty {
-                    buildConfigs.append(BuildInfo(name: configName, path: deckInfo.url.path, url: deckInfo.url, matches: deckInfo.matchedNames))
+                    buildConfigs.append(BuildInfo(name: configName, url: deckInfo.url, matches: deckInfo.matchedNames))
                     
                     let outputFile = outputDir.appendingPathComponent("\(configName).key")
                     let inputPathsAs = deckInfo.matchedNames.map { asEscape(blocksDir.appendingPathComponent("\($0).key").path) }
@@ -172,7 +183,6 @@ class AppState: ObservableObject {
         
         var newStaleNames: [String] = []
         var newFreshNames: [String] = []
-        var newCorrections: [String] = []
         var newDeckDataDict: [String: DeckData] = [:]
         
         for configNameWithExt in configs {
@@ -183,14 +193,10 @@ class AppState: ObservableObject {
                 let resolved = try resolveBlocks(blocksURL: blocksDir, configURL: configURL)
                 let stale = isStale(manifestDir: manifestsDir, outputsDir: outputsDir, blocksURL: blocksDir, configURL: configURL, matchedNames: resolved.matchedNames)
                 
-                newDeckDataDict[configName] = DeckData(path: configURL.path, url: configURL, matchedNames: resolved.matchedNames, inexactMatches: resolved.inexactMatches)
+                newDeckDataDict[configName] = DeckData(url: configURL, matchedNames: resolved.matchedNames, inexactMatches: resolved.inexactMatches)
                 
                 if stale {
                     newStaleNames.append(configName)
-                    if !resolved.inexactMatches.isEmpty {
-                        let matchesStr = resolved.inexactMatches.joined(separator: ", ")
-                        newCorrections.append("\(configName): \(matchesStr)")
-                    }
                 } else {
                     newFreshNames.append(configName)
                 }
@@ -204,7 +210,6 @@ class AppState: ObservableObject {
         self.deckDataDict = newDeckDataDict
         self.staleNames = newStaleNames
         self.freshNames = newFreshNames
-        self.corrections = newCorrections
         
         if self.buildFinished {
             if !newlyStale.isEmpty {

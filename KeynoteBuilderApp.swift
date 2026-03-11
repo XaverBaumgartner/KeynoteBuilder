@@ -9,7 +9,6 @@ struct KeynoteBuilderApp: App {
         Window("Keynote Builder", id: "main") {
             ContentView(appState: appState)
                 .onAppear {
-                    // Start processing logic
                     Task {
                         await appState.refreshDecks()
                     }
