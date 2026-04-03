@@ -1,9 +1,58 @@
 import Foundation
+import AppKit
+
+struct BlockMatch: Identifiable, Codable, Hashable {
+    var id = UUID()
+    let originalName: String
+    let resolvedRelativePath: String
+    let isFuzzy: Bool
+    let type: BlockType
+    var nestedDeck: ResolvedDeck?
+}
+
+enum BlockType: String, Codable {
+    case keynote
+    case config
+}
+
+struct ResolvedDeck: Codable, Hashable {
+    let url: URL
+    let matches: [BlockMatch]
+}
+
+struct DeckData: Codable {
+    let url: URL
+    let rootDeck: ResolvedDeck
+    let inexactMatches: [String] // For backward compatibility or top-level reporting
+}
+
+private struct BuildInfo {
+    let name: String
+    let url: URL
+    let keynotePaths: [String]
+}
+
+struct AppPaths {
+    let root: URL
+    let blocks: URL
+    let decks: URL
+    let outputs: URL
+    let manifests: URL
+}
+
+struct ScanResult {
+    let staleNames: [String]
+    let freshNames: [String]
+    let deckDataDict: [String: DeckData]
+    let error: String?
+}
 
 enum CoreError: Error, LocalizedError {
     case fileNotFound(URL)
     case unreadableConfig(URL)
     case writeFailed(URL)
+    case circularReference(URL)
+    case ambiguousReference(String, [String])
 
     var errorDescription: String? {
         switch self {
@@ -13,66 +62,141 @@ enum CoreError: Error, LocalizedError {
             return "Could not read config file: \(url.path)"
         case .writeFailed(let url):
             return "Could not write to file: \(url.path)"
+        case .circularReference(let url):
+            return "Circular reference detected in config: \(url.lastPathComponent)"
+        case .ambiguousReference(let name, let matches):
+            return "Ambiguous reference for '\(name)': matches both \(matches.joined(separator: " and "))."
         }
     }
 }
 
-func resolveBlocks(blocksURL: URL, configURL: URL) throws -> (matchedNames: [String], inexactMatches: [String]) {
+func resolveBlocks(blocksURL: URL, configURL: URL, visitedURLs: Set<URL> = [], isDeckRoot: Bool = false) throws -> ResolvedDeck {
+    if visitedURLs.contains(configURL) {
+        throw CoreError.circularReference(configURL)
+    }
+    
     guard let fileContents = try? String(contentsOf: configURL, encoding: .utf8) else {
         throw CoreError.unreadableConfig(configURL)
     }
     
     let fm = FileManager.default
-    guard let blockFilesAll = try? fm.contentsOfDirectory(atPath: blocksURL.path) else {
-        throw CoreError.fileNotFound(blocksURL)
+    var allFiles: [(name: String, path: String, type: BlockType)] = []
+    
+    let enumerator = fm.enumerator(at: blocksURL, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+    while let fileURL = enumerator?.nextObject() as? URL {
+        let relativePath = fileURL.path.replacingOccurrences(of: blocksURL.path + "/", with: "")
+        let ext = fileURL.pathExtension.lowercased()
+        
+        if ext == "key" {
+            allFiles.append((name: String(relativePath.dropLast(4)), path: relativePath, type: .keynote))
+        } else if ext == "txt" {
+            allFiles.append((name: String(relativePath.dropLast(4)), path: relativePath, type: .config))
+        }
     }
     
-    let blockFiles = blockFilesAll.filter { $0.lowercased().hasSuffix(".key") }
-        .map { String($0.dropLast(4)) }
-    let filesLower = blockFiles.map { $0.lowercased() }
-    
     let lines = fileContents.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    var matches: [BlockMatch] = []
+    var newVisited = visitedURLs
+    newVisited.insert(configURL)
     
-    var matchedNames: [String] = []
-    var inexactMatches: [String] = []
-    
-    for rawName in lines {
-        let trimmed = rawName.trimmingCharacters(in: .whitespaces)
+    for rawLine in lines {
+        let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
         var base = trimmed
-        if base.lowercased().hasSuffix(".key") {
+        if base.lowercased().hasSuffix(".key") || base.lowercased().hasSuffix(".txt") {
             base = String(base.dropLast(4))
         }
+        
+        // Restriction: Decks can't reference subblocks
+        if isDeckRoot && base.contains("/") {
+             // We'll ignore it or handle it as an error? The prompt says "but NOT subblocks".
+             // Let's just filter candidates to top-level only if isDeckRoot.
+        }
+        
+        let candidates = isDeckRoot ? allFiles.filter { !$0.path.contains("/") } : allFiles
+        
         let baseLower = base.lowercased()
+        var bestMatches: [(score: Double, index: Int)] = []
         
-        var bestIdx: Int? = nil
-        var bestScore = -1.0
+        for i in 0..<candidates.count {
+            let score = jaroWinkler(baseLower, candidates[i].name.lowercased())
+            bestMatches.append((score: score, index: i))
+        }
         
-        for i in 0..<blockFiles.count {
-            let score = jaroWinkler(baseLower, filesLower[i])
-            if score > bestScore {
-                bestScore = score
-                bestIdx = i
+        bestMatches.sort { $0.score > $1.score }
+        
+        guard let best = bestMatches.first else { continue }
+        
+        // Ambiguity check: if there are multiple matches with the same score but different types/paths
+        let topScore = best.score
+        let ties = bestMatches.filter { abs($0.score - topScore) < 0.001 }
+        if ties.count > 1 {
+            let matchedPaths = ties.map { candidates[$0.index].path }
+            // Check if they actually point to different files or just same basename in different folders
+            if Set(matchedPaths).count > 1 {
+                throw CoreError.ambiguousReference(base, matchedPaths)
             }
         }
         
-        guard let bestIndex = bestIdx else { continue }
+        let matchedFile = candidates[best.index]
+        let isFuzzy = baseLower != matchedFile.name.lowercased()
         
-        let matchedBase = blockFiles[bestIndex]
-        if base != matchedBase {
-            inexactMatches.append("'\(base)' -> '\(matchedBase)'")
+        var match = BlockMatch(
+            originalName: trimmed,
+            resolvedRelativePath: matchedFile.path,
+            isFuzzy: isFuzzy,
+            type: matchedFile.type,
+            nestedDeck: nil
+        )
+        
+        if matchedFile.type == .config {
+            let nestedURL = blocksURL.appendingPathComponent(matchedFile.path)
+            match.nestedDeck = try resolveBlocks(blocksURL: blocksURL, configURL: nestedURL, visitedURLs: newVisited)
         }
-        matchedNames.append(matchedBase)
+        
+        matches.append(match)
     }
     
-    return (matchedNames, inexactMatches)
+    return ResolvedDeck(url: configURL, matches: matches)
 }
 
-func writeCorrectedConfig(configURL: URL, matchedNames: [String]) throws {
-    let content = matchedNames.joined(separator: "\n") + "\n"
-    do {
-        try content.write(to: configURL, atomically: true, encoding: .utf8)
-    } catch {
-        throw CoreError.writeFailed(configURL)
+func getAllInexactMatches(deck: ResolvedDeck) -> [String] {
+    var result: [String] = []
+    for m in deck.matches {
+        if m.isFuzzy {
+            let base = m.originalName.hasSuffix(".key") || m.originalName.hasSuffix(".txt") ? String(m.originalName.dropLast(4)) : m.originalName
+            result.append("'\(base)' -> '\(m.resolvedRelativePath)'")
+        }
+        if let nested = m.nestedDeck {
+            result.append(contentsOf: getAllInexactMatches(deck: nested))
+        }
+    }
+    return Array(Set(result)).sorted()
+}
+
+func getAllKeynotePaths(deck: ResolvedDeck) -> [String] {
+    var paths: [String] = []
+    for m in deck.matches {
+        if m.type == .keynote {
+            paths.append(m.resolvedRelativePath)
+        } else if let nested = m.nestedDeck {
+            paths.append(contentsOf: getAllKeynotePaths(deck: nested))
+        }
+    }
+    return paths
+}
+
+func writeCorrectedConfigRecursive(deck: ResolvedDeck, blocksURL: URL) throws {
+    // Only write if there are fuzzy matches at this level
+    let currentLevelFuzzy = deck.matches.filter { $0.isFuzzy }
+    if !currentLevelFuzzy.isEmpty {
+        let content = deck.matches.map { $0.resolvedRelativePath }.joined(separator: "\n") + "\n"
+        try content.write(to: deck.url, atomically: true, encoding: .utf8)
+    }
+    
+    for m in deck.matches {
+        if let nested = m.nestedDeck {
+            try writeCorrectedConfigRecursive(deck: nested, blocksURL: blocksURL)
+        }
     }
 }
 
@@ -105,6 +229,10 @@ func writeManifest(url: URL, manifest: [String: String]) throws {
     if let config = manifest["CONFIG"] {
         lines.append("CONFIG=\(config)")
     }
+    // Nested configs
+    for key in manifest.keys.sorted().filter({ $0.hasPrefix("NESTED:") }) {
+        lines.append("\(key)=\(manifest[key]!)")
+    }
     for key in manifest.keys.sorted().filter({ $0.hasPrefix("BLOCK:") }) {
         lines.append("\(key)=\(manifest[key]!)")
     }
@@ -117,29 +245,37 @@ func writeManifest(url: URL, manifest: [String: String]) throws {
     }
 }
 
-func computeManifest(blocksURL: URL, configURL: URL, matchedNames: [String]) -> [String: String] {
+func computeManifest(blocksURL: URL, deck: ResolvedDeck) -> [String: String] {
     var manifest: [String: String] = [:]
-    manifest["CONFIG"] = fileFingerprint(url: configURL)
-    for name in matchedNames {
-        let blockFile = blocksURL.appendingPathComponent("\(name).key")
-        let fp = fileFingerprint(url: blockFile)
-        if !fp.isEmpty {
-            manifest["BLOCK:\(name)"] = fp
+    manifest["CONFIG"] = fileFingerprint(url: deck.url)
+    for m in deck.matches {
+        if m.type == .keynote {
+            let blockFile = blocksURL.appendingPathComponent(m.resolvedRelativePath)
+            let fp = fileFingerprint(url: blockFile)
+            if !fp.isEmpty {
+                manifest["BLOCK:\(m.resolvedRelativePath)"] = fp
+            }
+        } else if let nested = m.nestedDeck {
+            let nestedManifest = computeManifest(blocksURL: blocksURL, deck: nested)
+            // Flatten nested manifest with a prefix to avoid collisions
+            for (key, val) in nestedManifest {
+                manifest["NESTED:\(m.resolvedRelativePath):\(key)"] = val
+            }
         }
     }
     return manifest
 }
 
-func isStale(manifestDir: URL, outputsDir: URL, blocksURL: URL, configURL: URL, matchedNames: [String]) -> Bool {
-    let murl = buildManifestURL(manifestDir: manifestDir, configURL: configURL)
+func isStale(manifestDir: URL, outputsDir: URL, blocksURL: URL, deck: ResolvedDeck) -> Bool {
+    let murl = buildManifestURL(manifestDir: manifestDir, configURL: deck.url)
     if !FileManager.default.fileExists(atPath: murl.path) { return true }
     
-    let configName = configURL.deletingPathExtension().lastPathComponent
+    let configName = deck.url.deletingPathExtension().lastPathComponent
     let finalKeyURL = outputsDir.appendingPathComponent("\(configName).key")
     if !FileManager.default.fileExists(atPath: finalKeyURL.path) { return true }
     
     let oldManifest = readManifest(url: murl)
-    let currentManifest = computeManifest(blocksURL: blocksURL, configURL: configURL, matchedNames: matchedNames)
+    let currentManifest = computeManifest(blocksURL: blocksURL, deck: deck)
     
     if oldManifest.count != currentManifest.count { return true }
     
@@ -253,4 +389,134 @@ func jaroWinkler(_ s1: String, _ s2: String) -> Double {
     }
     
     return jaro + Double(prefix) * 0.1 * (1.0 - jaro)
+}
+
+func assembleDecks(toBuild: [String], deckDataDict: [String: DeckData], blocksURL: URL, outputsURL: URL, manifestURL: URL) async throws -> Int {
+    var buildConfigs: [BuildInfo] = []
+    var assembleAs = "tell application \"Keynote Creator Studio\"\n    activate\n"
+    
+    for configName in toBuild {
+        guard let deckData = deckDataDict[configName] else { continue }
+        if !deckData.inexactMatches.isEmpty {
+            try writeCorrectedConfigRecursive(deck: deckData.rootDeck, blocksURL: blocksURL)
+        }
+        
+        let keynotePaths = getAllKeynotePaths(deck: deckData.rootDeck)
+        if !keynotePaths.isEmpty {
+            buildConfigs.append(BuildInfo(name: configName, url: deckData.url, keynotePaths: keynotePaths))
+            
+            let outputFile = outputsURL.appendingPathComponent("\(configName).key")
+            let inputPathsAs = keynotePaths.map { asEscape(blocksURL.appendingPathComponent($0).path) }
+            let asInputs = "{" + inputPathsAs.map { "POSIX file \"\($0)\"" }.joined(separator: ", ") + "}"
+            let escapedOutput = asEscape(outputFile.path)
+            
+            assembleAs += """
+                -- Build: \(configName)
+                set targetDoc to make new document
+                save targetDoc in POSIX file "\(escapedOutput)"
+                
+                set inputList to \(asInputs)
+                repeat with inputPath in inputList
+                    set sourceDoc to open inputPath
+                    move slides of sourceDoc to end of slides of targetDoc
+                    close sourceDoc saving no
+                end repeat
+                
+                delete slide 1 of targetDoc
+                save targetDoc
+                
+                close targetDoc saving yes
+
+            """
+        }
+    }
+    
+    assembleAs += "end tell"
+    
+    if !buildConfigs.isEmpty {
+        let _ = try await Task.detached(priority: .userInitiated) {
+            try runApplescript(assembleAs)
+        }.value
+
+        for bc in buildConfigs {
+            guard let deckData = deckDataDict[bc.name] else { continue }
+            let newManifest = computeManifest(blocksURL: blocksURL, deck: deckData.rootDeck)
+            let murl = buildManifestURL(manifestDir: manifestURL, configURL: bc.url)
+            try writeManifest(url: murl, manifest: newManifest)
+        }
+    }
+    
+    return toBuild.count
+}
+
+func discoverPaths() -> AppPaths {
+    let fm = FileManager.default
+    let executableURL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+    var rootURL = executableURL.deletingLastPathComponent()
+    
+    let rootPath = rootURL.path
+    if rootPath.hasSuffix("Contents/MacOS") || rootPath.hasSuffix("Contents/Resources") {
+        rootURL = rootURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    } else {
+        rootURL = URL(fileURLWithPath: fm.currentDirectoryPath)
+    }
+    
+    let blocksDir = rootURL.appendingPathComponent("blocks")
+    let decksDir = rootURL.appendingPathComponent("decks")
+    let outputsDir = rootURL.appendingPathComponent("outputs")
+    let manifestsDir = outputsDir.appendingPathComponent(".manifests")
+    
+    return AppPaths(root: rootURL, blocks: blocksDir, decks: decksDir, outputs: outputsDir, manifests: manifestsDir)
+}
+
+func scanDecks(paths: AppPaths) async -> ScanResult {
+    let fm = FileManager.default
+    
+    if !fm.fileExists(atPath: paths.blocks.path) {
+        return ScanResult(staleNames: [], freshNames: [], deckDataDict: [:], error: "No blocks/ folder found.")
+    }
+    
+    if !fm.fileExists(atPath: paths.decks.path) {
+        return ScanResult(staleNames: [], freshNames: [], deckDataDict: [:], error: "No decks/ folder found. Please create a decks/ folder with .txt config files.")
+    }
+    
+    try? fm.createDirectory(at: paths.outputs, withIntermediateDirectories: true)
+    try? fm.createDirectory(at: paths.manifests, withIntermediateDirectories: true)
+    
+    guard let deckFilesAll = try? fm.contentsOfDirectory(atPath: paths.decks.path) else {
+        return ScanResult(staleNames: [], freshNames: [], deckDataDict: [:], error: "Could not read decks folder.")
+    }
+    
+    let configs = deckFilesAll.filter { $0.hasSuffix(".txt") }
+    
+    if configs.isEmpty {
+        return ScanResult(staleNames: [], freshNames: [], deckDataDict: [:], error: "No deck configs (.txt) found in the decks/ folder.")
+    }
+    
+    var staleNames: [String] = []
+    var freshNames: [String] = []
+    var deckDataDict: [String: DeckData] = [:]
+    
+    for configNameWithExt in configs {
+        let configName = String(configNameWithExt.dropLast(4))
+        let configURL = paths.decks.appendingPathComponent(configNameWithExt)
+        
+        do {
+            let rootDeck = try resolveBlocks(blocksURL: paths.blocks, configURL: configURL, isDeckRoot: true)
+            let inexact = getAllInexactMatches(deck: rootDeck)
+            let stale = isStale(manifestDir: paths.manifests, outputsDir: paths.outputs, blocksURL: paths.blocks, deck: rootDeck)
+            
+            deckDataDict[configName] = DeckData(url: configURL, rootDeck: rootDeck, inexactMatches: inexact)
+            
+            if stale {
+                staleNames.append(configName)
+            } else {
+                freshNames.append(configName)
+            }
+        } catch {
+            return ScanResult(staleNames: [], freshNames: [], deckDataDict: [:], error: error.localizedDescription)
+        }
+    }
+    
+    return ScanResult(staleNames: staleNames, freshNames: freshNames, deckDataDict: deckDataDict, error: nil)
 }

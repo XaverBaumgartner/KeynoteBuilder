@@ -73,43 +73,8 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
                             List(appState.staleNames, id: \.self) { name in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Toggle(name, isOn: Binding(
-                                        get: { appState.selectedNames.contains(name) },
-                                        set: { _ in appState.toggleSelection(name) }
-                                    ))
-                                    
-                                    if let deck = appState.deckDataDict[name], !deck.inexactMatches.isEmpty {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            ForEach(deck.inexactMatches, id: \.self) { matchStr in
-                                                let parts = matchStr.components(separatedBy: "' -> '")
-                                                if parts.count == 2 {
-                                                    let oldName = parts[0].replacingOccurrences(of: "'", with: "")
-                                                    let newName = parts[1].replacingOccurrences(of: "'", with: "")
-                                                    
-                                                    HStack(alignment: .top, spacing: 4) {
-                                                        Image(systemName: "arrow.triangle.swap")
-                                                            .foregroundColor(.secondary)
-                                                        Text(oldName)
-                                                            .foregroundColor(.secondary)
-                                                        Image(systemName: "arrow.right")
-                                                            .foregroundColor(.secondary)
-                                                            .font(.system(size: 10, weight: .bold))
-                                                        Text(newName)
-                                                            .foregroundColor(.primary)
-                                                            .bold()
-                                                    }
-                                                    .font(.caption)
-                                                } else {
-                                                    Text(matchStr)
-                                                        .foregroundColor(.secondary)
-                                                        .font(.caption)
-                                                }
-                                            }
-                                        }
-                                        .padding(.leading, 24)
-                                        .padding(.bottom, 4)
-                                    }
+                                if let deckData = appState.deckDataDict[name] {
+                                    DeckTreeView(name: name, deck: deckData.rootDeck, isRoot: true, appState: appState)
                                 }
                             }
                         }
@@ -181,7 +146,7 @@ struct ContentView: View {
                 .padding()
             }
         }
-        .frame(minWidth: 550, minHeight: 350)
+        .frame(minWidth: 550, minHeight: 450)
         .onReceive(timer) { _ in
             if !appState.isBuilding {
                 Task {
@@ -189,5 +154,109 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+struct DeckTreeView: View {
+    let name: String
+    let deck: ResolvedDeck
+    let isRoot: Bool
+    let correction: (old: String, new: String)?
+    @ObservedObject var appState: AppState
+
+    init(name: String, deck: ResolvedDeck, isRoot: Bool, correction: (old: String, new: String)? = nil, appState: AppState) {
+        self.name = name
+        self.deck = deck
+        self.isRoot = isRoot
+        self.correction = correction
+        self.appState = appState
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                if isRoot {
+                    Toggle("", isOn: Binding(
+                        get: { appState.selectedNames.contains(name) },
+                        set: { _ in appState.toggleSelection(name) }
+                    ))
+                    .labelsHidden()
+                } else {
+                    Spacer().frame(width: 14)
+                }
+                
+                if let correction = correction {
+                    HStack(alignment: .center, spacing: 4) {
+                        Image(systemName: "arrow.triangle.swap")
+                            .foregroundColor(.orange)
+                        Text(correction.old)
+                            .strikethrough()
+                            .foregroundColor(.secondary)
+                        Image(systemName: "arrow.right")
+                            .foregroundColor(.secondary)
+                            .font(.system(size: 9))
+                        Text(correction.new)
+                            .foregroundColor(isRoot ? .primary : .secondary)
+                            .bold(isRoot)
+                    }
+                    .font(isRoot ? .body : .subheadline)
+                } else {
+                    HStack(spacing: 4) {
+                        if !isRoot {
+                            Image(systemName: "square.stack.3d.up")
+                                .foregroundColor(.secondary)
+                        }
+                        Text(name)
+                            .font(isRoot ? .body : .subheadline)
+                            .bold(isRoot)
+                    }
+                }
+                
+                if !isRoot && deck.url.pathExtension == "txt" {
+                    Text("(config)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(deck.matches) { match in
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let nested = match.nestedDeck {
+                            let corr = match.isFuzzy ? (old: match.originalName, new: match.resolvedRelativePath) : nil
+                            DeckTreeView(name: match.resolvedRelativePath, deck: nested, isRoot: false, correction: corr, appState: appState)
+                        } else {
+                            if match.isFuzzy {
+                                HStack(alignment: .center, spacing: 4) {
+                                    Image(systemName: "arrow.triangle.swap")
+                                        .foregroundColor(.orange)
+                                    Text(match.originalName)
+                                        .strikethrough()
+                                        .foregroundColor(.secondary)
+                                    Image(systemName: "arrow.right")
+                                        .foregroundColor(.secondary)
+                                        .font(.system(size: 9))
+                                    Text(match.resolvedRelativePath)
+                                        .foregroundColor(.secondary)
+                                }
+                                .font(.caption)
+                                .padding(.leading, 20)
+                            } else {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "doc.richtext")
+                                        .foregroundColor(.secondary)
+                                    Text(match.resolvedRelativePath)
+                                        .foregroundColor(.secondary)
+                                }
+                                .font(.caption)
+                                .padding(.leading, 20)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.leading, 20)
+        }
+        .padding(.vertical, 2)
     }
 }
