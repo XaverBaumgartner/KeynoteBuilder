@@ -10,7 +10,6 @@ class AppState: ObservableObject {
     @Published var deckDataDict: [String: DeckData] = [:]
     @Published var initializationError: String? = nil
     
-    @Published var buildProgress: Double = 0
     @Published var isBuilding = false
     @Published var buildFinished = false
     @Published var buildFinishedDate: Date? = nil
@@ -43,7 +42,6 @@ class AppState: ObservableObject {
         guard let outputDir = outputsURL, let blocksDir = blocksURL, let manifestDir = manifestURL else { return }
         
         isBuilding = true
-        buildProgress = 0
         buildError = nil
         
         do {
@@ -59,7 +57,6 @@ class AppState: ObservableObject {
             self.isBuilding = false
             self.buildFinished = true
             self.buildFinishedDate = Date()
-            self.buildProgress = 1.0
             
             NSApplication.shared.activate(ignoringOtherApps: true)
         } catch {

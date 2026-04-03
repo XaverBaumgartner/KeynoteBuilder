@@ -8,7 +8,6 @@ struct ContentView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-
             if let error = appState.initializationError {
                 VStack {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -196,7 +195,7 @@ struct DeckTreeView: View {
                             .foregroundColor(.secondary)
                             .font(.system(size: 9))
                         Text(correction.new)
-                            .foregroundColor(isRoot ? .primary : .secondary)
+                        .foregroundColor(.primary)
                             .bold(isRoot)
                     }
                     .font(isRoot ? .body : .subheadline)
@@ -208,15 +207,11 @@ struct DeckTreeView: View {
                         }
                         Text(name)
                             .font(isRoot ? .body : .subheadline)
+                            .foregroundColor(.primary)
                             .bold(isRoot)
                     }
                 }
                 
-                if !isRoot && deck.url.pathExtension == "txt" {
-                    Text("(config)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
             }
             
             VStack(alignment: .leading, spacing: 4) {
@@ -237,7 +232,7 @@ struct DeckTreeView: View {
                                         .foregroundColor(.secondary)
                                         .font(.system(size: 9))
                                     Text(match.resolvedRelativePath)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(.primary)
                                 }
                                 .font(.caption)
                                 .padding(.leading, 20)
@@ -246,7 +241,7 @@ struct DeckTreeView: View {
                                     Image(systemName: "doc.richtext")
                                         .foregroundColor(.secondary)
                                     Text(match.resolvedRelativePath)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(.primary)
                                 }
                                 .font(.caption)
                                 .padding(.leading, 20)

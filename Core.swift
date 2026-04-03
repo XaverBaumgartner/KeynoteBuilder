@@ -33,7 +33,6 @@ private struct BuildInfo {
 }
 
 struct AppPaths {
-    let root: URL
     let blocks: URL
     let decks: URL
     let outputs: URL
@@ -48,7 +47,6 @@ struct ScanResult {
 }
 
 enum CoreError: Error, LocalizedError {
-    case fileNotFound(URL)
     case unreadableConfig(URL)
     case writeFailed(URL)
     case circularReference(URL)
@@ -56,8 +54,6 @@ enum CoreError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .fileNotFound(let url):
-            return "File not found: \(url.path)"
         case .unreadableConfig(let url):
             return "Could not read config file: \(url.path)"
         case .writeFailed(let url):
@@ -70,28 +66,13 @@ enum CoreError: Error, LocalizedError {
     }
 }
 
-func resolveBlocks(blocksURL: URL, configURL: URL, visitedURLs: Set<URL> = [], isDeckRoot: Bool = false) throws -> ResolvedDeck {
+func resolveBlocks(blocksURL: URL, configURL: URL, allFiles: [(name: String, path: String, type: BlockType)], visitedURLs: Set<URL> = [], isDeckRoot: Bool = false) throws -> ResolvedDeck {
     if visitedURLs.contains(configURL) {
         throw CoreError.circularReference(configURL)
     }
     
     guard let fileContents = try? String(contentsOf: configURL, encoding: .utf8) else {
         throw CoreError.unreadableConfig(configURL)
-    }
-    
-    let fm = FileManager.default
-    var allFiles: [(name: String, path: String, type: BlockType)] = []
-    
-    let enumerator = fm.enumerator(at: blocksURL, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
-    while let fileURL = enumerator?.nextObject() as? URL {
-        let relativePath = fileURL.path.replacingOccurrences(of: blocksURL.path + "/", with: "")
-        let ext = fileURL.pathExtension.lowercased()
-        
-        if ext == "key" {
-            allFiles.append((name: String(relativePath.dropLast(4)), path: relativePath, type: .keynote))
-        } else if ext == "txt" {
-            allFiles.append((name: String(relativePath.dropLast(4)), path: relativePath, type: .config))
-        }
     }
     
     let lines = fileContents.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -101,16 +82,7 @@ func resolveBlocks(blocksURL: URL, configURL: URL, visitedURLs: Set<URL> = [], i
     
     for rawLine in lines {
         let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
-        var base = trimmed
-        if base.lowercased().hasSuffix(".key") || base.lowercased().hasSuffix(".txt") {
-            base = String(base.dropLast(4))
-        }
-        
-        // Restriction: Decks can't reference subblocks
-        if isDeckRoot && base.contains("/") {
-             // We'll ignore it or handle it as an error? The prompt says "but NOT subblocks".
-             // Let's just filter candidates to top-level only if isDeckRoot.
-        }
+        let base = stripExtension(trimmed)
         
         let candidates = isDeckRoot ? allFiles.filter { !$0.path.contains("/") } : allFiles
         
@@ -131,7 +103,6 @@ func resolveBlocks(blocksURL: URL, configURL: URL, visitedURLs: Set<URL> = [], i
         let ties = bestMatches.filter { abs($0.score - topScore) < 0.001 }
         if ties.count > 1 {
             let matchedPaths = ties.map { candidates[$0.index].path }
-            // Check if they actually point to different files or just same basename in different folders
             if Set(matchedPaths).count > 1 {
                 throw CoreError.ambiguousReference(base, matchedPaths)
             }
@@ -150,7 +121,7 @@ func resolveBlocks(blocksURL: URL, configURL: URL, visitedURLs: Set<URL> = [], i
         
         if matchedFile.type == .config {
             let nestedURL = blocksURL.appendingPathComponent(matchedFile.path)
-            match.nestedDeck = try resolveBlocks(blocksURL: blocksURL, configURL: nestedURL, visitedURLs: newVisited)
+            match.nestedDeck = try resolveBlocks(blocksURL: blocksURL, configURL: nestedURL, allFiles: allFiles, visitedURLs: newVisited)
         }
         
         matches.append(match)
@@ -163,7 +134,7 @@ func getAllInexactMatches(deck: ResolvedDeck) -> [String] {
     var result: [String] = []
     for m in deck.matches {
         if m.isFuzzy {
-            let base = m.originalName.hasSuffix(".key") || m.originalName.hasSuffix(".txt") ? String(m.originalName.dropLast(4)) : m.originalName
+            let base = stripExtension(m.originalName)
             result.append("'\(base)' -> '\(m.resolvedRelativePath)'")
         }
         if let nested = m.nestedDeck {
@@ -286,6 +257,14 @@ func isStale(manifestDir: URL, outputsDir: URL, blocksURL: URL, deck: ResolvedDe
 }
 
 //////////////// Utils //////////////////
+
+private func stripExtension(_ s: String) -> String {
+    let lower = s.lowercased()
+    if lower.hasSuffix(".key") || lower.hasSuffix(".txt") {
+        return String(s.dropLast(4))
+    }
+    return s
+}
 
 func fileFingerprint(url: URL) -> String {
     guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -466,7 +445,7 @@ func discoverPaths() -> AppPaths {
     let outputsDir = rootURL.appendingPathComponent("outputs")
     let manifestsDir = outputsDir.appendingPathComponent(".manifests")
     
-    return AppPaths(root: rootURL, blocks: blocksDir, decks: decksDir, outputs: outputsDir, manifests: manifestsDir)
+    return AppPaths(blocks: blocksDir, decks: decksDir, outputs: outputsDir, manifests: manifestsDir)
 }
 
 func scanDecks(paths: AppPaths) async -> ScanResult {
@@ -497,12 +476,25 @@ func scanDecks(paths: AppPaths) async -> ScanResult {
     var freshNames: [String] = []
     var deckDataDict: [String: DeckData] = [:]
     
+    var allFiles: [(name: String, path: String, type: BlockType)] = []
+    let enumerator = fm.enumerator(at: paths.blocks, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+    while let fileURL = enumerator?.nextObject() as? URL {
+        let relativePath = fileURL.path.replacingOccurrences(of: paths.blocks.path + "/", with: "")
+        let ext = fileURL.pathExtension.lowercased()
+        
+        if ext == "key" {
+            allFiles.append((name: String(relativePath.dropLast(4)), path: relativePath, type: .keynote))
+        } else if ext == "txt" {
+            allFiles.append((name: String(relativePath.dropLast(4)), path: relativePath, type: .config))
+        }
+    }
+
     for configNameWithExt in configs {
         let configName = String(configNameWithExt.dropLast(4))
         let configURL = paths.decks.appendingPathComponent(configNameWithExt)
         
         do {
-            let rootDeck = try resolveBlocks(blocksURL: paths.blocks, configURL: configURL, isDeckRoot: true)
+            let rootDeck = try resolveBlocks(blocksURL: paths.blocks, configURL: configURL, allFiles: allFiles, isDeckRoot: true)
             let inexact = getAllInexactMatches(deck: rootDeck)
             let stale = isStale(manifestDir: paths.manifests, outputsDir: paths.outputs, blocksURL: paths.blocks, deck: rootDeck)
             
