@@ -74,9 +74,9 @@ class AppState: ObservableObject {
         self.manifestURL = paths.manifests
         
         let result = await scanDecks(paths: paths)
+        self.initializationError = result.error
         
-        if let error = result.error {
-            self.initializationError = error
+        if result.error != nil {
             return
         }
         
