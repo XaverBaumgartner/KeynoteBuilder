@@ -131,7 +131,7 @@ struct UpToDateStateView: View {
                 .font(.system(size: 40))
             Text("All decks are up-to-date.")
                 .font(.headline)
-            Text("Nothing to rebuild.")
+            Text("Nothing to build.")
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -226,7 +226,7 @@ struct ControlFooter: View {
                 }
                 .disabled(appState.isBuilding)
                 
-                Button("Rebuild Selected") {
+                Button("Build Selected") {
                     Task {
                         await appState.performAssembly()
                     }
@@ -325,12 +325,17 @@ struct MatchItemRow: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if let nested = match.nestedDeck {
-                let corr = match.isFuzzy ? (old: match.originalName, new: match.resolvedRelativePath) : nil
-                DeckTreeView(name: match.resolvedRelativePath, deck: nested, isRoot: false, correction: corr, appState: appState)
-            } else {
+        if let nested = match.nestedDeck {
+            let corr = match.isFuzzy ? (old: match.originalName, new: match.resolvedRelativePath) : nil
+            DeckTreeView(name: match.resolvedRelativePath, deck: nested, isRoot: false, correction: corr, appState: appState)
+        } else {
+            switch match.type {
+            case .menti(let code):
+                MentiRow(code: code, originalName: match.originalName, isFuzzy: match.isFuzzy, appState: appState)
+            default:
                 FileRow(match: match)
             }
+        }
         }
     }
 }
@@ -350,5 +355,53 @@ struct FileRow: View {
             }
         }
         .font(.subheadline)
+    }
+}
+
+struct MentiRow: View {
+    let code: String
+    let originalName: String
+    let isFuzzy: Bool
+    @ObservedObject var appState: AppState
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "qrcode")
+                .foregroundColor(.secondary)
+            
+            if isFuzzy {
+                HStack(alignment: .center, spacing: 4) {
+                    Text(originalName)
+                        .strikethrough()
+                        .foregroundColor(.orange)
+                    Image(systemName: "arrow.right")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 9))
+                }
+            }
+            
+            Text("menti \(code)")
+                .foregroundColor(statusColor)
+                .bold()
+            
+            if let status = appState.mentiStatuses[code] {
+                Image(systemName: status ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .foregroundColor(statusColor)
+                    .font(.caption)
+            } else {
+                ProgressView()
+                    .scaleEffect(0.4)
+                    .frame(width: 12, height: 12)
+            }
+        }
+        .font(.subheadline)
+    }
+    
+    private var statusColor: Color {
+        switch appState.mentiStatuses[code] {
+        case .some(true): return .green
+        case .some(false): return .red
+        case .none: return .secondary
+        }
     }
 }

@@ -1,0 +1,8 @@
+Menti reinkriegen
+Pause, Agenda Folien
+
+Bessere file fingerprints: 2 stage system - erst time modified, dann hash checken
+
+Erlauben, in decks auch Dateien in Unterordnern zu referencen, bzw ganzes Erlaubnissystem streichen? 
+
+Existierende outputs als cache nutzen 

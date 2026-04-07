@@ -36,7 +36,7 @@ A macOS application that assembles Apple Keynote presentations from modular slid
 ## How to Use
 1. **Write a config file** — create a `.txt` file in the `decks/` folder and list the sections you want, one per line.
 2. **Run the app** — it finds all configs in `decks/` and checks them against existing files in `outputs/` to determine which ones are yet to be built or need to be rebuilt (modified config or modified blocks).
-3. **Select Decks** — Select which stale decks to rebuild, check fuzzy matches for correctness.
+3. **Select Decks** — Select which stale decks to build, check fuzzy matches for correctness.
 4. **Done** — the merged `.key` files are placed in the `outputs/` folder.
 
 ## Configuration

@@ -15,6 +15,7 @@ class AppState: ObservableObject {
     @Published var buildFinishedDate: Date? = nil
     @Published var builtDeckCount: Int = 0
     @Published var buildError: String? = nil
+    @Published var mentiStatuses: [String: Bool] = [:]
     
     private var hasCompletedInitialRefresh = false
     
@@ -50,7 +51,8 @@ class AppState: ObservableObject {
                 deckDataDict: deckDataDict,
                 blocksURL: blocksDir,
                 outputsURL: outputDir,
-                manifestURL: manifestDir
+                manifestURL: manifestDir,
+                mentiStatuses: mentiStatuses
             )
             
             self.builtDeckCount = deckCount
@@ -73,7 +75,7 @@ class AppState: ObservableObject {
         self.outputsURL = paths.outputs
         self.manifestURL = paths.manifests
         
-        let result = await scanDecks(paths: paths)
+        let result = await scanDecks(paths: paths, mentiStatuses: self.mentiStatuses)
         self.initializationError = result.error
         
         if result.error != nil {
@@ -110,5 +112,44 @@ class AppState: ObservableObject {
             }
             self.hasCompletedInitialRefresh = true
         }
+        
+        await validateMentiCodes()
+    }
+    
+    private func validateMentiCodes() async {
+        var codesToValidate: Set<String> = []
+        for deckData in deckDataDict.values {
+            codesToValidate.formUnion(collectMentiCodes(deck: deckData.rootDeck))
+        }
+        
+        for code in codesToValidate {
+            if mentiStatuses[code] == nil {
+                // To avoid multiple requests, mark as in-flight or just validate
+                // For simplicity, we just validate if nil
+                do {
+                    _ = try await getMentimeterURL(code: code)
+                    mentiStatuses[code] = true
+                } catch {
+                    mentiStatuses[code] = false
+                }
+            }
+        }
+    }
+    
+    private func collectMentiCodes(deck: ResolvedDeck) -> [String] {
+        var codes: [String] = []
+        for m in deck.matches {
+            switch m.type {
+            case .menti(let code):
+                codes.append(code)
+            case .config:
+                if let nested = m.nestedDeck {
+                    codes.append(contentsOf: collectMentiCodes(deck: nested))
+                }
+            default:
+                break
+            }
+        }
+        return codes
     }
 }

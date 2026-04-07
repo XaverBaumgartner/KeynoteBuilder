@@ -1,5 +1,9 @@
 import Foundation
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
+import UniformTypeIdentifiers
+import ImageIO
 
 struct BlockMatch: Identifiable, Codable, Hashable {
     var id = UUID()
@@ -10,9 +14,18 @@ struct BlockMatch: Identifiable, Codable, Hashable {
     var nestedDeck: ResolvedDeck?
 }
 
-enum BlockType: String, Codable {
+enum BlockType: Codable, Hashable {
     case keynote
     case config
+    case menti(code: String)
+
+    var rawValue: String {
+        switch self {
+        case .keynote: return "keynote"
+        case .config: return "config"
+        case .menti(let code): return "menti:\(code)"
+        }
+    }
 }
 
 struct ResolvedDeck: Codable, Hashable {
@@ -51,6 +64,7 @@ enum CoreError: Error, LocalizedError {
     case writeFailed(URL)
     case circularReference(URL)
     case ambiguousReference(String, [String])
+    case mentiError(String)
 
     var errorDescription: String? {
         switch self {
@@ -62,6 +76,8 @@ enum CoreError: Error, LocalizedError {
             return "Circular reference detected in config: \(url.lastPathComponent)"
         case .ambiguousReference(let name, let matches):
             return "Ambiguous reference for '\(name)': matches both \(matches.joined(separator: " and "))."
+        case .mentiError(let msg):
+            return "Menti Error: \(msg)"
         }
     }
 }
@@ -87,10 +103,14 @@ func resolveBlocks(blocksURL: URL, configURL: URL, allFiles: [(name: String, pat
         let candidates = isDeckRoot ? allFiles.filter { !$0.path.contains("/") } : allFiles
         
         let baseLower = base.lowercased()
-        var bestMatches: [(score: Double, index: Int)] = []
         
-        for i in 0..<candidates.count {
-            let score = jaroWinkler(baseLower, candidates[i].name.lowercased())
+        // Add "menti" as a virtual candidate
+        var candidateNames = candidates.map { $0.name.lowercased() }
+        candidateNames.append("menti")
+        
+        var bestMatches: [(score: Double, index: Int)] = []
+        for i in 0..<candidateNames.count {
+            let score = jaroWinkler(baseLower, candidateNames[i])
             bestMatches.append((score: score, index: i))
         }
         
@@ -98,11 +118,26 @@ func resolveBlocks(blocksURL: URL, configURL: URL, allFiles: [(name: String, pat
         
         guard let best = bestMatches.first else { continue }
         
-        // Ambiguity check: if there are multiple matches with the same score but different types/paths
         let topScore = best.score
         let ties = bestMatches.filter { abs($0.score - topScore) < 0.001 }
+        
+        if candidateNames[best.index] == "menti" {
+            // It's a menti slide
+            let code = extractMentiCode(trimmed)
+            let normalized = "menti \(code)"
+            let match = BlockMatch(
+                originalName: trimmed,
+                resolvedRelativePath: normalized, // Virtual path
+                isFuzzy: baseLower != normalized.lowercased(),
+                type: .menti(code: code),
+                nestedDeck: nil
+            )
+            matches.append(match)
+            continue
+        }
+        
         if ties.count > 1 {
-            let matchedPaths = ties.map { candidates[$0.index].path }
+            let matchedPaths = ties.compactMap { $0.index < candidates.count ? candidates[$0.index].path : nil }
             if Set(matchedPaths).count > 1 {
                 throw CoreError.ambiguousReference(base, matchedPaths)
             }
@@ -128,6 +163,42 @@ func resolveBlocks(blocksURL: URL, configURL: URL, allFiles: [(name: String, pat
     }
     
     return ResolvedDeck(url: configURL, matches: matches)
+}
+
+enum AssemblableBlock {
+    case existingKeynote(URL)
+    case menti(code: String)
+}
+
+func collectAssemblableBlocks(deck: ResolvedDeck, blocksURL: URL) -> [AssemblableBlock] {
+    var blocks: [AssemblableBlock] = []
+    for m in deck.matches {
+        switch m.type {
+        case .keynote:
+            blocks.append(.existingKeynote(blocksURL.appendingPathComponent(m.resolvedRelativePath)))
+        case .menti(let code):
+            blocks.append(.menti(code: code))
+        case .config:
+            if let nested = m.nestedDeck {
+                blocks.append(contentsOf: collectAssemblableBlocks(deck: nested, blocksURL: blocksURL))
+            }
+        }
+    }
+    return blocks
+}
+
+func extractMentiCode(_ s: String) -> String {
+    let pattern = "(\\d[\\s-]*){8}"
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else {
+        return ""
+    }
+    let codeWithNoise = String(s[Range(match.range, in: s)!])
+    let digits = codeWithNoise.filter(\.isNumber)
+    if digits.count == 8 {
+        return "\(digits.prefix(4)) \(digits.suffix(4))"
+    }
+    return digits
 }
 
 func getAllInexactMatches(deck: ResolvedDeck) -> [String] {
@@ -216,28 +287,33 @@ func writeManifest(url: URL, manifest: [String: String]) throws {
     }
 }
 
-func computeManifest(blocksURL: URL, deck: ResolvedDeck) -> [String: String] {
+func computeManifest(blocksURL: URL, deck: ResolvedDeck, mentiStatuses: [String: Bool]) -> [String: String] {
     var manifest: [String: String] = [:]
     manifest["CONFIG"] = fileFingerprint(url: deck.url)
     for m in deck.matches {
-        if m.type == .keynote {
+        switch m.type {
+        case .keynote:
             let blockFile = blocksURL.appendingPathComponent(m.resolvedRelativePath)
             let fp = fileFingerprint(url: blockFile)
             if !fp.isEmpty {
                 manifest["BLOCK:\(m.resolvedRelativePath)"] = fp
             }
-        } else if let nested = m.nestedDeck {
-            let nestedManifest = computeManifest(blocksURL: blocksURL, deck: nested)
-            // Flatten nested manifest with a prefix to avoid collisions
-            for (key, val) in nestedManifest {
-                manifest["NESTED:\(m.resolvedRelativePath):\(key)"] = val
+        case .menti(let code):
+            let status = mentiStatuses[code] ?? false
+            manifest["BLOCK:menti:\(code)"] = status ? "VALID" : "INVALID"
+        case .config:
+            if let nested = m.nestedDeck {
+                let nestedManifest = computeManifest(blocksURL: blocksURL, deck: nested, mentiStatuses: mentiStatuses)
+                for (key, val) in nestedManifest {
+                    manifest["NESTED:\(m.resolvedRelativePath):\(key)"] = val
+                }
             }
         }
     }
     return manifest
 }
 
-func isStale(manifestDir: URL, outputsDir: URL, blocksURL: URL, deck: ResolvedDeck) -> Bool {
+func isStale(manifestDir: URL, outputsDir: URL, blocksURL: URL, deck: ResolvedDeck, mentiStatuses: [String: Bool]) -> Bool {
     let murl = buildManifestURL(manifestDir: manifestDir, configURL: deck.url)
     if !FileManager.default.fileExists(atPath: murl.path) { return true }
     
@@ -246,7 +322,7 @@ func isStale(manifestDir: URL, outputsDir: URL, blocksURL: URL, deck: ResolvedDe
     if !FileManager.default.fileExists(atPath: finalKeyURL.path) { return true }
     
     let oldManifest = readManifest(url: murl)
-    let currentManifest = computeManifest(blocksURL: blocksURL, deck: deck)
+    let currentManifest = computeManifest(blocksURL: blocksURL, deck: deck, mentiStatuses: mentiStatuses)
     
     if oldManifest.count != currentManifest.count { return true }
     
@@ -370,9 +446,12 @@ func jaroWinkler(_ s1: String, _ s2: String) -> Double {
     return jaro + Double(prefix) * 0.1 * (1.0 - jaro)
 }
 
-func assembleDecks(toBuild: [String], deckDataDict: [String: DeckData], blocksURL: URL, outputsURL: URL, manifestURL: URL) async throws -> Int {
+func assembleDecks(toBuild: [String], deckDataDict: [String: DeckData], blocksURL: URL, outputsURL: URL, manifestURL: URL, mentiStatuses: [String: Bool]) async throws -> Int {
     var buildConfigs: [BuildInfo] = []
     var assembleAs = "tell application \"Keynote Creator Studio\"\n    activate\n"
+    
+    // We need the root URL to find Resources
+    let rootURL = blocksURL.deletingLastPathComponent()
     
     for configName in toBuild {
         guard let deckData = deckDataDict[configName] else { continue }
@@ -380,33 +459,56 @@ func assembleDecks(toBuild: [String], deckDataDict: [String: DeckData], blocksUR
             try writeCorrectedConfigRecursive(deck: deckData.rootDeck, blocksURL: blocksURL)
         }
         
-        let keynotePaths = getAllKeynotePaths(deck: deckData.rootDeck)
-        if !keynotePaths.isEmpty {
-            buildConfigs.append(BuildInfo(name: configName, url: deckData.url, keynotePaths: keynotePaths))
+        let blocks = collectAssemblableBlocks(deck: deckData.rootDeck, blocksURL: blocksURL)
+        if !blocks.isEmpty {
+            var keynotePaths: [String] = []
+            var inputPathsToAssemble: [URL] = []
             
-            let outputFile = outputsURL.appendingPathComponent("\(configName).key")
-            let inputPathsAs = keynotePaths.map { asEscape(blocksURL.appendingPathComponent($0).path) }
-            let asInputs = "{" + inputPathsAs.map { "POSIX file \"\($0)\"" }.joined(separator: ", ") + "}"
-            let escapedOutput = asEscape(outputFile.path)
+            for block in blocks {
+                switch block {
+                case .existingKeynote(let url):
+                    inputPathsToAssemble.append(url)
+                    keynotePaths.append(url.path.replacingOccurrences(of: blocksURL.path + "/", with: ""))
+                case .menti(let code):
+                    if mentiStatuses[code] == true {
+                        do {
+                            let tempUrl = try await generateMentiSlide(code: code, rootURL: rootURL, outputURL: outputsURL)
+                            inputPathsToAssemble.append(tempUrl)
+                            // We don't add temp files to manifest paths as they change every time
+                        } catch {
+                            print("Warning: Failed to generate Menti slide for \(code): \(error)")
+                        }
+                    }
+                }
+            }
             
-            assembleAs += """
-                -- Build: \(configName)
-                set targetDoc to make new document
-                save targetDoc in POSIX file "\(escapedOutput)"
+            if !inputPathsToAssemble.isEmpty {
+                buildConfigs.append(BuildInfo(name: configName, url: deckData.url, keynotePaths: keynotePaths))
                 
-                set inputList to \(asInputs)
-                repeat with inputPath in inputList
-                    set sourceDoc to open inputPath
-                    move slides of sourceDoc to end of slides of targetDoc
-                    close sourceDoc saving no
-                end repeat
+                let outputFile = outputsURL.appendingPathComponent("\(configName).key")
+                let inputPathsAs = inputPathsToAssemble.map { asEscape($0.path) }
+                let asInputs = "{" + inputPathsAs.map { "POSIX file \"\($0)\"" }.joined(separator: ", ") + "}"
+                let escapedOutput = asEscape(outputFile.path)
                 
-                delete slide 1 of targetDoc
-                save targetDoc
-                
-                close targetDoc saving yes
+                assembleAs += """
+                    -- Build: \(configName)
+                    set targetDoc to make new document
+                    save targetDoc in POSIX file "\(escapedOutput)"
+                    
+                    set inputList to \(asInputs)
+                    repeat with inputPath in inputList
+                        set sourceDoc to open inputPath
+                        move slides of sourceDoc to end of slides of targetDoc
+                        close sourceDoc saving no
+                    end repeat
+                    
+                    delete slide 1 of targetDoc
+                    save targetDoc
+                    
+                    close targetDoc saving yes
 
-            """
+                """
+            }
         }
     }
     
@@ -419,7 +521,7 @@ func assembleDecks(toBuild: [String], deckDataDict: [String: DeckData], blocksUR
 
         for bc in buildConfigs {
             guard let deckData = deckDataDict[bc.name] else { continue }
-            let newManifest = computeManifest(blocksURL: blocksURL, deck: deckData.rootDeck)
+            let newManifest = computeManifest(blocksURL: blocksURL, deck: deckData.rootDeck, mentiStatuses: mentiStatuses)
             let murl = buildManifestURL(manifestDir: manifestURL, configURL: bc.url)
             try writeManifest(url: murl, manifest: newManifest)
         }
@@ -448,7 +550,7 @@ func discoverPaths() -> AppPaths {
     return AppPaths(blocks: blocksDir, decks: decksDir, outputs: outputsDir, manifests: manifestsDir)
 }
 
-func scanDecks(paths: AppPaths) async -> ScanResult {
+func scanDecks(paths: AppPaths, mentiStatuses: [String: Bool]) async -> ScanResult {
     let fm = FileManager.default
     
     if !fm.fileExists(atPath: paths.blocks.path) {
@@ -496,7 +598,7 @@ func scanDecks(paths: AppPaths) async -> ScanResult {
         do {
             let rootDeck = try resolveBlocks(blocksURL: paths.blocks, configURL: configURL, allFiles: allFiles, isDeckRoot: true)
             let inexact = getAllInexactMatches(deck: rootDeck)
-            let stale = isStale(manifestDir: paths.manifests, outputsDir: paths.outputs, blocksURL: paths.blocks, deck: rootDeck)
+            let stale = isStale(manifestDir: paths.manifests, outputsDir: paths.outputs, blocksURL: paths.blocks, deck: rootDeck, mentiStatuses: mentiStatuses)
             
             deckDataDict[configName] = DeckData(url: configURL, rootDeck: rootDeck, inexactMatches: inexact)
             
@@ -511,4 +613,125 @@ func scanDecks(paths: AppPaths) async -> ScanResult {
     }
     
     return ScanResult(staleNames: staleNames, freshNames: freshNames, deckDataDict: deckDataDict, error: nil)
+}
+
+// MARK: - Menti Logic
+
+func getMentimeterURL(code: String) async throws -> String {
+    let digits = code.filter(\.isNumber)
+    guard digits.count == 8 else { throw CoreError.mentiError("Invalid code: \(code)") }
+
+    let apiURL = URL(string: "https://www.menti.com/core/audience/slide-deck/\(digits)/participation-key")!
+    let (data, response) = try await URLSession.shared.data(for: URLRequest(url: apiURL))
+
+    guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        throw CoreError.mentiError("Menti code not found or expired.")
+    }
+
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let key = json["participation_key"] as? String else {
+        throw CoreError.mentiError("Invalid response from Menti.")
+    }
+
+    return "https://menti.com/\(key)"
+}
+
+func makeQRPNGData(for text: String, size: Int) throws -> Data {
+    let filter = CIFilter.qrCodeGenerator()
+    filter.message = Data(text.utf8)
+    filter.correctionLevel = "M"
+
+    guard let raw = filter.outputImage else { throw CoreError.mentiError("QR generation failed.") }
+
+    let scale = CGFloat(size) / raw.extent.width
+    let scaled = raw.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+
+    let context = CIContext()
+    guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else {
+        throw CoreError.mentiError("QR generation failed.")
+    }
+
+    let data = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+        throw CoreError.mentiError("QR generation failed.")
+    }
+    CGImageDestinationAddImage(dest, cgImage, nil)
+    guard CGImageDestinationFinalize(dest) else { throw CoreError.mentiError("QR generation failed.") }
+
+    return data as Data
+}
+
+func rebuildZip(templatePath: String, replacements: [String: Data], outputPath: String) throws {
+    let fm = FileManager.default
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("menti_assembly_\(ProcessInfo.processInfo.processIdentifier)_\(UUID().uuidString)")
+    try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: tmp) }
+
+    let unzip = Process()
+    unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+    unzip.arguments = ["-q", templatePath, "-d", tmp.path]
+    try unzip.run()
+    unzip.waitUntilExit()
+    guard unzip.terminationStatus == 0 else {
+        throw CoreError.mentiError("unzip failed with status \(unzip.terminationStatus) for \(templatePath)")
+    }
+    
+    for (entry, data) in replacements {
+        let dest = tmp.appendingPathComponent(entry)
+        try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: dest)
+    }
+
+    try? fm.removeItem(atPath: outputPath)
+
+    let zip = Process()
+    zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+    zip.currentDirectoryURL = tmp
+    zip.arguments = ["-r", "-X", outputPath, "."]
+    try zip.run()
+    zip.waitUntilExit()
+    guard zip.terminationStatus == 0 else {
+        throw CoreError.mentiError("zip failed with status \(zip.terminationStatus) for \(outputPath)")
+    }
+}
+
+func updateMentiText(in keyPath: String, url: String, codeLabel: String) throws {
+    let script = """
+        tell application "Keynote"
+            set targetDoc to open POSIX file "\(asEscape(keyPath))"
+            set sl to slide 1 of targetDoc
+            set object text of text item 4 of sl to "\(asEscape(url))"
+            set object text of text item 3 of sl to "\(asEscape(codeLabel))"
+            save targetDoc
+            close targetDoc saving yes
+        end tell
+        """
+    _ = try runApplescript(script)
+}
+
+func generateMentiSlide(code: String, rootURL: URL, outputURL: URL) async throws -> URL {
+    let resourcesURL = rootURL.appendingPathComponent("Resources")
+    let resolvedURL = try await getMentimeterURL(code: code)
+    let digits = code.filter(\.isNumber)
+    let codeLabel = "Code: \(digits.prefix(4)) \(digits.suffix(4))"
+    
+    let templateURL = resourcesURL.appendingPathComponent("Menti Template.key")
+    if !FileManager.default.fileExists(atPath: templateURL.path) {
+        throw CoreError.mentiError("Menti Template not found at \(templateURL.path)")
+    }
+    let templatePath = templateURL.path
+    let tempOutput = outputURL.deletingLastPathComponent().appendingPathComponent("menti_temp_\(digits).key").path
+    
+    try rebuildZip(
+        templatePath: templatePath,
+        replacements: [
+            "Data/mentimeter_qr_code-9078.png": try makeQRPNGData(for: resolvedURL, size: 2000),
+            "Data/mentimeter_qr_code-small-9079.png": try makeQRPNGData(for: resolvedURL, size: 256)
+        ],
+        outputPath: tempOutput
+    )
+    
+    try updateMentiText(in: tempOutput, url: resolvedURL, codeLabel: codeLabel)
+    return URL(fileURLWithPath: tempOutput)
 }
