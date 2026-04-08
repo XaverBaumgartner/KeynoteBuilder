@@ -1,5 +1,5 @@
 APP_NAME    = KeynoteBuilder
-SWIFT_FILES = $(wildcard *.swift)
+SWIFT_FILES = $(shell find . -name "*.swift" -not -path "./$(APP_BUNDLE)/*")
 APP_BUNDLE  = $(APP_NAME).app
 MACOS_DIR   = $(APP_BUNDLE)/Contents/MacOS
 

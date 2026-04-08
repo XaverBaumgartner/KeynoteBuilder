@@ -1,8 +1,15 @@
-Menti reinkriegen
-Pause, Agenda Folien
+Demo schreiben und Update auf Nextcloud pushen
+
+Logik zu:
+    1. config file matchen und flatten, inklusive menti und pause
+    2. Erst wenn menti, agenda, pause verarbeitet werden, entsprechende Logik ausführen
+
+Bugfixes/Troubleshooting
+    - Hat Menti gerade 2 RTTs?
+    - Warum laden Foliensätze mit Agenda am Anfang 10 Sekunden, und andere nicht?
 
 Bessere file fingerprints: 2 stage system - erst time modified, dann hash checken
 
-Erlauben, in decks auch Dateien in Unterordnern zu referencen, bzw ganzes Erlaubnissystem streichen? 
-
 Existierende outputs als cache nutzen 
+
+Outline integration (setzt Excel integration voraus)

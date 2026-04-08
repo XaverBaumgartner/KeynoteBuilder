@@ -2,8 +2,11 @@ import Foundation
 import Combine
 import AppKit
 
+/// The main application state management object, coordinating between services and the UI.
 @MainActor
 class AppState: ObservableObject {
+    // MARK: - Published Properties
+    
     @Published var staleNames: [String] = []
     @Published var freshNames: [String] = []
     @Published var selectedNames: Set<String> = []
@@ -17,12 +20,17 @@ class AppState: ObservableObject {
     @Published var buildError: String? = nil
     @Published var mentiStatuses: [String: Bool] = [:]
     
+    // MARK: - Private Properties
+    
     private var hasCompletedInitialRefresh = false
     
     var blocksURL: URL? = nil
     var outputsURL: URL? = nil
     var manifestURL: URL? = nil
     
+    // MARK: - Actions
+    
+    /// Toggles the selection status of a deck.
     func toggleSelection(_ name: String) {
         if selectedNames.contains(name) {
             selectedNames.remove(name)
@@ -31,6 +39,7 @@ class AppState: ObservableObject {
         }
     }
     
+    /// Toggles selection for all currently stale decks.
     func toggleAll() {
         if selectedNames.count == staleNames.count {
             selectedNames.removeAll()
@@ -39,19 +48,20 @@ class AppState: ObservableObject {
         }
     }
     
+    /// Performs the assembly process for all selected decks.
     func performAssembly() async {
         guard let outputDir = outputsURL, let blocksDir = blocksURL, let manifestDir = manifestURL else { return }
         
         isBuilding = true
         buildError = nil
         
+        let paths = AppPaths(blocks: blocksDir, decks: blocksDir.deletingLastPathComponent().appendingPathComponent("decks"), outputs: outputDir, manifests: manifestDir)
+        
         do {
-            let deckCount = try await assembleDecks(
+            let deckCount = try await KeynoteService.assembleDecks(
                 toBuild: Array(selectedNames),
                 deckDataDict: deckDataDict,
-                blocksURL: blocksDir,
-                outputsURL: outputDir,
-                manifestURL: manifestDir,
+                paths: paths,
                 mentiStatuses: mentiStatuses
             )
             
@@ -67,15 +77,16 @@ class AppState: ObservableObject {
         }
     }
     
+    /// Scans the filesystem for decks and updates the state.
     func refreshDecks() async {
         guard !isBuilding else { return }
         
-        let paths = discoverPaths()
+        let paths = FileUtilities.discoverPaths()
         self.blocksURL = paths.blocks
         self.outputsURL = paths.outputs
         self.manifestURL = paths.manifests
         
-        let result = await scanDecks(paths: paths, mentiStatuses: self.mentiStatuses)
+        let result = await DeckResolver.scanDecks(paths: paths, mentiStatuses: self.mentiStatuses)
         self.initializationError = result.error
         
         if result.error != nil {
@@ -116,6 +127,9 @@ class AppState: ObservableObject {
         await validateMentiCodes()
     }
     
+    // MARK: - Private Helpers
+    
+    /// Validates all Menti codes found in the current decks.
     private func validateMentiCodes() async {
         var codesToValidate: Set<String> = []
         for deckData in deckDataDict.values {
@@ -124,10 +138,8 @@ class AppState: ObservableObject {
         
         for code in codesToValidate {
             if mentiStatuses[code] == nil {
-                // To avoid multiple requests, mark as in-flight or just validate
-                // For simplicity, we just validate if nil
                 do {
-                    _ = try await getMentimeterURL(code: code)
+                    _ = try await MentiService.getMentimeterURL(code: code)
                     mentiStatuses[code] = true
                 } catch {
                     mentiStatuses[code] = false
@@ -136,6 +148,7 @@ class AppState: ObservableObject {
         }
     }
     
+    /// Recursively collects all Menti codes from a deck.
     private func collectMentiCodes(deck: ResolvedDeck) -> [String] {
         var codes: [String] = []
         for m in deck.matches {
