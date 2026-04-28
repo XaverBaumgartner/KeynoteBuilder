@@ -54,9 +54,10 @@ public enum FileUtilities {
         let blocksDir = rootURL.appendingPathComponent("blocks")
         let decksDir = rootURL.appendingPathComponent("decks")
         let outputsDir = rootURL.appendingPathComponent("outputs")
+        let outputsCacheDir = outputsDir.appendingPathComponent(".cache")
         let deckManifestsDir = decksDir.appendingPathComponent(".manifests")
         let outputManifestsDir = outputsDir.appendingPathComponent(".manifests")
         
-        return AppPaths(blocks: blocksDir, decks: decksDir, outputs: outputsDir, deckManifests: deckManifestsDir, outputManifests: outputManifestsDir)
+        return AppPaths(blocks: blocksDir, decks: decksDir, outputs: outputsDir, outputsCache: outputsCacheDir, deckManifests: deckManifestsDir, outputManifests: outputManifestsDir)
     }
 }

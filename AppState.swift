@@ -26,6 +26,7 @@ class AppState: ObservableObject {
     
     var blocksURL: URL? = nil
     var outputsURL: URL? = nil
+    var outputsCacheURL: URL? = nil
     var deckManifestsURL: URL? = nil
     var outputManifestsURL: URL? = nil
     
@@ -51,12 +52,12 @@ class AppState: ObservableObject {
     
     /// Performs the assembly process for all selected decks.
     func performAssembly() async {
-        guard let outputDir = outputsURL, let blocksDir = blocksURL, let deckMan = deckManifestsURL, let outMan = outputManifestsURL else { return }
+        guard let outputDir = outputsURL, let outputsCacheDir = outputsCacheURL, let blocksDir = blocksURL, let deckMan = deckManifestsURL, let outMan = outputManifestsURL else { return }
         
         isBuilding = true
         buildError = nil
         
-        let paths = AppPaths(blocks: blocksDir, decks: blocksDir.deletingLastPathComponent().appendingPathComponent("decks"), outputs: outputDir, deckManifests: deckMan, outputManifests: outMan)
+        let paths = AppPaths(blocks: blocksDir, decks: blocksDir.deletingLastPathComponent().appendingPathComponent("decks"), outputs: outputDir, outputsCache: outputsCacheDir, deckManifests: deckMan, outputManifests: outMan)
         
         do {
             let deckCount = try await KeynoteService.assembleDecks(
@@ -85,6 +86,7 @@ class AppState: ObservableObject {
         let paths = FileUtilities.discoverPaths()
         self.blocksURL = paths.blocks
         self.outputsURL = paths.outputs
+        self.outputsCacheURL = paths.outputsCache
         self.deckManifestsURL = paths.deckManifests
         self.outputManifestsURL = paths.outputManifests
         

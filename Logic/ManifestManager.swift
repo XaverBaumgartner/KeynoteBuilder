@@ -4,13 +4,15 @@ import Foundation
 public enum ManifestManager {
     
     /// Checks if a deck is stale (needs a rebuild) using DeckManifests.
-    public static func isStale(manifestDir: URL, outputsDir: URL, blocksURL: URL, deck: ResolvedDeck, mentiStatuses: [String: Bool]) -> Bool {
+    public static func isStale(manifestDir: URL, outputsDir: URL, outputsCacheDir: URL, blocksURL: URL, deck: ResolvedDeck, mentiStatuses: [String: Bool]) -> Bool {
         let murl = buildManifestURL(manifestDir: manifestDir, configURL: deck.url)
         if !FileManager.default.fileExists(atPath: murl.path) { return true }
         
         let configName = deck.url.deletingPathExtension().lastPathComponent
         let finalKeyURL = outputsDir.appendingPathComponent("\(configName).key")
+        let cacheKeyURL = outputsCacheDir.appendingPathComponent("\(configName).key")
         if !FileManager.default.fileExists(atPath: finalKeyURL.path) { return true }
+        if !FileManager.default.fileExists(atPath: cacheKeyURL.path) { return true }
         
         guard var oldManifest = readDeckManifest(url: murl) else { return true }
         let currentManifest = computeDeckManifest(blocksURL: blocksURL, deck: deck, mentiStatuses: mentiStatuses)
@@ -18,9 +20,18 @@ public enum ManifestManager {
         // Output Integrity Check via OutputManifest
         let outputManifestURL = outputsDir.appendingPathComponent(".manifests").appendingPathComponent("\(configName).manifest")
         if let outManifest = readOutputManifest(url: outputManifestURL) {
-            let currentOutputFP = FileUtilities.fileFingerprint(url: finalKeyURL)
-            if currentOutputFP != outManifest.outputFingerprint {
-                return true // Output was manually changed
+            let cacheOutputFP = FileUtilities.fileFingerprint(url: cacheKeyURL)
+            if cacheOutputFP != outManifest.outputFingerprint {
+                return true // Cache was manually changed
+            }
+            
+            let finalAttr = try? FileManager.default.attributesOfItem(atPath: finalKeyURL.path)
+            let cacheAttr = try? FileManager.default.attributesOfItem(atPath: cacheKeyURL.path)
+            if let finalMtime = finalAttr?[.modificationDate] as? Date,
+               let cacheMtime = cacheAttr?[.modificationDate] as? Date {
+                if finalMtime < cacheMtime {
+                    return true // final is older than the cache, meaning an old file was copied over
+                }
             }
         } else {
             return true // No output manifest
@@ -134,22 +145,22 @@ public enum ManifestManager {
     }
     
     /// Reads all OutputManifests and returns those that represent currently valid `.key` outputs.
-    public static func getValidOutputManifests(outputsDir: URL, manifestDir: URL) -> [(url: URL, manifest: OutputManifest)] {
+    public static func getValidOutputManifests(outputsDir: URL, outputsCacheDir: URL, manifestDir: URL) -> [(url: URL, manifest: OutputManifest)] {
         var results: [(url: URL, manifest: OutputManifest)] = []
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: manifestDir.path) else { return results }
         
         for file in files where file.hasSuffix(".manifest") {
             let configName = String(file.dropLast(9))
-            let finalKeyURL = outputsDir.appendingPathComponent("\(configName).key")
+            let cacheKeyURL = outputsCacheDir.appendingPathComponent("\(configName).key")
             let manifestURL = manifestDir.appendingPathComponent(file)
             
-            if !FileManager.default.fileExists(atPath: finalKeyURL.path) { continue }
+            if !FileManager.default.fileExists(atPath: cacheKeyURL.path) { continue }
             guard let manifest = readOutputManifest(url: manifestURL) else { continue }
             
-            let currentFP = FileUtilities.fileFingerprint(url: finalKeyURL)
-            if currentFP != manifest.outputFingerprint { continue } // Output was modified
+            let currentFP = FileUtilities.fileFingerprint(url: cacheKeyURL)
+            if currentFP != manifest.outputFingerprint { continue } // Cache was modified
             
-            results.append((finalKeyURL, manifest))
+            results.append((cacheKeyURL, manifest))
         }
         
         return results

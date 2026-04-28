@@ -11,6 +11,9 @@ public struct AppPaths {
     /// URL for the "outputs" directory.
     public let outputs: URL
     
+    /// URL for the "outputs/.cache" directory.
+    public let outputsCache: URL
+    
     /// URL where the deck manifests are stored (decks/.manifests).
     public let deckManifests: URL
     
@@ -18,10 +21,11 @@ public struct AppPaths {
     public let outputManifests: URL
     
     /// Initializes a new `AppPaths`.
-    public init(blocks: URL, decks: URL, outputs: URL, deckManifests: URL, outputManifests: URL) {
+    public init(blocks: URL, decks: URL, outputs: URL, outputsCache: URL, deckManifests: URL, outputManifests: URL) {
         self.blocks = blocks
         self.decks = decks
         self.outputs = outputs
+        self.outputsCache = outputsCache
         self.deckManifests = deckManifests
         self.outputManifests = outputManifests
     }

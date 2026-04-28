@@ -54,7 +54,7 @@ public enum KeynoteService {
         var processedCount = 0
         
         // 1. Build cache pool from valid output manifests
-        let validOutputs = ManifestManager.getValidOutputManifests(outputsDir: paths.outputs, manifestDir: paths.outputManifests)
+        let validOutputs = ManifestManager.getValidOutputManifests(outputsDir: paths.outputs, outputsCacheDir: paths.outputsCache, manifestDir: paths.outputManifests)
         
         for configName in toBuild {
             guard let deckData = deckDataDict[configName] else { continue }
@@ -68,7 +68,8 @@ public enum KeynoteService {
             if blocks.isEmpty { continue }
 
             let outputFile = paths.outputs.appendingPathComponent("\(configName).key")
-            let escapedOutput = StringUtilities.asEscape(outputFile.path)
+            let cacheFile = paths.outputsCache.appendingPathComponent("\(configName).key")
+            let escapedOutput = StringUtilities.asEscape(cacheFile.path)
             let agendaText = AgendaService.generateAgendaString(from: deckData.rootDeck)
             var tempFilesToDelete: [URL] = []
             
@@ -173,8 +174,14 @@ public enum KeynoteService {
                 try? FileManager.default.removeItem(at: url)
             }
             
+            // Copy from cache to outputs
+            if FileManager.default.fileExists(atPath: outputFile.path) {
+                try? FileManager.default.removeItem(at: outputFile)
+            }
+            try? FileManager.default.copyItem(at: cacheFile, to: outputFile)
+            
             let counts = resultString.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-            let outFP = FileUtilities.fileFingerprint(url: outputFile)
+            let outFP = FileUtilities.fileFingerprint(url: cacheFile)
             
             // Build the new OutputManifest for caching future builds
             var cacheEntries: [CacheEntry] = []

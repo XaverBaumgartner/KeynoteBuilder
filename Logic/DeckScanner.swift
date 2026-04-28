@@ -20,6 +20,7 @@ public enum DeckScanner {
         }
         
         try? fm.createDirectory(at: paths.outputs, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: paths.outputsCache, withIntermediateDirectories: true)
         try? fm.createDirectory(at: paths.deckManifests, withIntermediateDirectories: true)
         try? fm.createDirectory(at: paths.outputManifests, withIntermediateDirectories: true)
         
@@ -65,7 +66,7 @@ public enum DeckScanner {
             do {
                 let rootDeck = try DeckResolver.resolveBlocks(blocksURL: paths.blocks, configURL: configURL, allFiles: allFiles, isDeckRoot: true)
                 let inexact = DeckResolver.getAllInexactMatches(deck: rootDeck)
-                let stale = ManifestManager.isStale(manifestDir: paths.deckManifests, outputsDir: paths.outputs, blocksURL: paths.blocks, deck: rootDeck, mentiStatuses: mentiStatuses)
+                let stale = ManifestManager.isStale(manifestDir: paths.deckManifests, outputsDir: paths.outputs, outputsCacheDir: paths.outputsCache, blocksURL: paths.blocks, deck: rootDeck, mentiStatuses: mentiStatuses)
                 
                 let modifiedDate = (try? configURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
                 deckDataDict[configName] = DeckData(url: configURL, rootDeck: rootDeck, inexactMatches: inexact, modifiedDate: modifiedDate)
