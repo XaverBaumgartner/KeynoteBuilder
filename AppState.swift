@@ -26,7 +26,8 @@ class AppState: ObservableObject {
     
     var blocksURL: URL? = nil
     var outputsURL: URL? = nil
-    var manifestURL: URL? = nil
+    var deckManifestsURL: URL? = nil
+    var outputManifestsURL: URL? = nil
     
     // MARK: - Actions
     
@@ -50,12 +51,12 @@ class AppState: ObservableObject {
     
     /// Performs the assembly process for all selected decks.
     func performAssembly() async {
-        guard let outputDir = outputsURL, let blocksDir = blocksURL, let manifestDir = manifestURL else { return }
+        guard let outputDir = outputsURL, let blocksDir = blocksURL, let deckMan = deckManifestsURL, let outMan = outputManifestsURL else { return }
         
         isBuilding = true
         buildError = nil
         
-        let paths = AppPaths(blocks: blocksDir, decks: blocksDir.deletingLastPathComponent().appendingPathComponent("decks"), outputs: outputDir, manifests: manifestDir)
+        let paths = AppPaths(blocks: blocksDir, decks: blocksDir.deletingLastPathComponent().appendingPathComponent("decks"), outputs: outputDir, deckManifests: deckMan, outputManifests: outMan)
         
         do {
             let deckCount = try await KeynoteService.assembleDecks(
@@ -84,9 +85,10 @@ class AppState: ObservableObject {
         let paths = FileUtilities.discoverPaths()
         self.blocksURL = paths.blocks
         self.outputsURL = paths.outputs
-        self.manifestURL = paths.manifests
+        self.deckManifestsURL = paths.deckManifests
+        self.outputManifestsURL = paths.outputManifests
         
-        let result = await DeckResolver.scanDecks(paths: paths, mentiStatuses: self.mentiStatuses)
+        let result = await DeckScanner.scanDecks(paths: paths, mentiStatuses: self.mentiStatuses)
         self.initializationError = result.error
         
         if result.error != nil {
@@ -94,6 +96,15 @@ class AppState: ObservableObject {
         }
         
         let newlyStale = Set(result.staleNames).subtracting(self.staleNames)
+        var editedStale = Set<String>()
+        
+        for name in result.staleNames {
+            if let oldDate = self.deckDataDict[name]?.modifiedDate,
+               let newDate = result.deckDataDict[name]?.modifiedDate,
+               newDate > oldDate {
+                editedStale.insert(name)
+            }
+        }
         
         self.deckDataDict = result.deckDataDict
         self.staleNames = result.staleNames
@@ -112,16 +123,19 @@ class AppState: ObservableObject {
             self.buildFinishedDate = nil
         }
         
-        // Retain selected names that are still stale, and add new ones
-        self.selectedNames = self.selectedNames.intersection(result.staleNames)
-        self.selectedNames.formUnion(newlyStale)
-        
-        // If nothing was selected on the initial load, select all stale decks
         if !self.hasCompletedInitialRefresh {
-            if self.selectedNames.isEmpty {
-                self.selectedNames = Set(result.staleNames)
+            // On initial load, select only the topmost stale deck
+            if let firstStale = result.staleNames.first {
+                self.selectedNames = [firstStale]
+            } else {
+                self.selectedNames = []
             }
             self.hasCompletedInitialRefresh = true
+        } else {
+            // Retain selected names that are still stale, and add new ones / edited ones
+            self.selectedNames = self.selectedNames.intersection(result.staleNames)
+            self.selectedNames.formUnion(newlyStale)
+            self.selectedNames.formUnion(editedStale)
         }
         
         await validateMentiCodes()

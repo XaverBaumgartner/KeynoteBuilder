@@ -77,7 +77,8 @@ public enum MentiService {
             throw CoreError.mentiError("Menti Template not found at \(templateURL.path)")
         }
         
-        let tempOutput = outputURL.deletingLastPathComponent().appendingPathComponent("menti_temp_\(digits).key").path
+        let tempOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("menti_temp_\(digits).key").path
         
         try rebuildZip(
             templatePath: templateURL.path,
@@ -128,15 +129,20 @@ public enum MentiService {
         }
     }
     
-    /// Updates the text items in the generated Keynote slide via AppleScript.
     private static func updateMentiText(in keyPath: String, url: String, codeLabel: String) throws {
+        let replacementScript = AppleScriptUtilities.replaceTextInSlideScript(
+            replacements: [
+                ("menti.com/XX", url),
+                ("Code: XX", codeLabel)
+            ],
+            applyFallbackToItem1: false
+        )
+        
         let script = """
             tell application "Keynote"
                 set targetDoc to open POSIX file "\(StringUtilities.asEscape(keyPath))"
                 set sl to slide 1 of targetDoc
-                -- Text items 3 and 4 match the template's structure.
-                set object text of text item 4 of sl to "\(StringUtilities.asEscape(url))"
-                set object text of text item 3 of sl to "\(StringUtilities.asEscape(codeLabel))"
+                \(replacementScript)
                 save targetDoc
                 close targetDoc saving yes
             end tell

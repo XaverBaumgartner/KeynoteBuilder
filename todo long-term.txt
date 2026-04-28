@@ -1,15 +1,11 @@
-Demo schreiben und Update auf Nextcloud pushen
+Kleinzeug
+- Decks ohne Dateiendungen überschreiben
+- keynote chapter werden aktuell geflattet, das wenn möglich ändern
 
-Logik zu:
-    1. config file matchen und flatten, inklusive menti und pause
-    2. Erst wenn menti, agenda, pause verarbeitet werden, entsprechende Logik ausführen
 
-Bugfixes/Troubleshooting
-    - Hat Menti gerade 2 RTTs?
-    - Warum laden Foliensätze mit Agenda am Anfang 10 Sekunden, und andere nicht?
+/outputs/.cache anlegen, um dort alles doppelt abzuspeichern. Hilft gegen presentations öffnen -> speichern ohne Änderungen -> alles neu bauen müssen, wäre dann gecached. Ermöglicht auch caching von Zwischenblocks, die nicht in outputs sichtbar sein sollen.
+Daraus folgend: Optimize Cache Knopf, der alle .txt in /blocks in key in /outputs/.cache umwandelt und alles unnötige aus dem cache löscht
 
-Bessere file fingerprints: 2 stage system - erst time modified, dann hash checken
+Bessere file fingerprints für Keynote-Dateien. DateModified+FileSize ist zu streng, speichern ohne Änderungen führt zu false positives.
 
-Existierende outputs als cache nutzen 
-
-Outline integration (setzt Excel integration voraus)
+Outline integration o. Ä.

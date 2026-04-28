@@ -14,26 +14,16 @@ public enum PauseService {
         let displayText = StringUtilities.formatPauseDisplay(info)
         
         let escapedTemplate = StringUtilities.asEscape(templateURL.path)
-        let escapedText = StringUtilities.asEscape(displayText)
+        let replacementScript = AppleScriptUtilities.replaceTextInSlideScript(
+            replacements: [("Minuten", displayText), ("XX", displayText)],
+            applyFallbackToItem1: true
+        )
         
         return """
                 -- Insert Pause: \(info)
                 set sourceDoc to open POSIX file "\(escapedTemplate)"
                 set sl to slide 1 of sourceDoc
-                
-                set found to false
-                repeat with ti in (text items of sl)
-                    if (object text of ti) contains "Minuten" or (object text of ti) contains "XX" then
-                        set object text of ti to "\(escapedText)"
-                        set found to true
-                        exit repeat
-                    end if
-                end repeat
-                
-                if not found and (count of text items of sl) > 0 then
-                    set object text of text item 1 of sl to "\(escapedText)"
-                end if
-                
+                \(replacementScript)
                 move slide 1 of sourceDoc to end of slides of targetDoc
                 close sourceDoc saving no
         """

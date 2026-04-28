@@ -12,7 +12,17 @@ public enum AgendaService {
         var agendaItems: [String] = []
         
         for match in deck.matches {
-            let baseName = match.displayName
+            var baseName = match.displayName
+            
+            // Strip info for special types in the agenda
+            switch match.type {
+            case .menti:
+                baseName = "Menti"
+            case .pause:
+                baseName = "Pause"
+            default:
+                break
+            }
             
             // Check if it should be excluded
             if !excludedNames.contains(baseName.lowercased()) {
@@ -35,27 +45,16 @@ public enum AgendaService {
     /// - Returns: An AppleScript string.
     public static func getAgendaAssemblyScript(agendaText: String, templateURL: URL) -> String {
         let escapedTemplate = StringUtilities.asEscape(templateURL.path)
-        let escapedText = StringUtilities.asEscape(agendaText)
+        let replacementScript = AppleScriptUtilities.replaceTextInSlideScript(
+            replacements: [("XX", agendaText)],
+            applyFallbackToItem1: true
+        )
         
         return """
                 -- Insert Agenda
                 set sourceDoc to open POSIX file "\(escapedTemplate)"
                 set sl to slide 1 of sourceDoc
-                
-                set found to false
-                repeat with ti in (text items of sl)
-                    if (object text of ti) contains "XX" then
-                        set object text of ti to "\(escapedText)"
-                        set found to true
-                        exit repeat
-                    end if
-                end repeat
-                
-                if not found and (count of text items of sl) > 0 then
-                    -- Fallback to the first text item if the placeholder is not found
-                    set object text of text item 1 of sl to "\(escapedText)"
-                end if
-                
+                \(replacementScript)
                 move slide 1 of sourceDoc to end of slides of targetDoc
                 close sourceDoc saving no
         """

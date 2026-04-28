@@ -11,14 +11,18 @@ public struct AppPaths {
     /// URL for the "outputs" directory.
     public let outputs: URL
     
-    /// URL where the build manifests are stored.
-    public let manifests: URL
+    /// URL where the deck manifests are stored (decks/.manifests).
+    public let deckManifests: URL
+    
+    /// URL where the output cache manifests are stored (outputs/.manifests).
+    public let outputManifests: URL
     
     /// Initializes a new `AppPaths`.
-    public init(blocks: URL, decks: URL, outputs: URL, manifests: URL) {
+    public init(blocks: URL, decks: URL, outputs: URL, deckManifests: URL, outputManifests: URL) {
         self.blocks = blocks
         self.decks = decks
         self.outputs = outputs
-        self.manifests = manifests
+        self.deckManifests = deckManifests
+        self.outputManifests = outputManifests
     }
 }
